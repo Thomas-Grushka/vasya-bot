@@ -125,31 +125,49 @@ const createVacancyText = ({title, salary, description, employer, link})=> {
     return result;
 }
 
-const createRetryableTask = (taskName, taskFunction, maxRetries = 3) => {
-    let retryCount = 0;
+// const createRetryableTask = (taskName, taskFunction, maxRetries = 3) => {
+//     let retryCount = 0;
   
-    return new AsyncTask(
-      taskName,
-      async () => {
-        try {
-          await taskFunction();
-          // Сброс счетчика при успешном выполнении
-          retryCount = 0;
-        } catch (error) {
-          console.error(`Ошибка в задаче ${taskName}:`, error);
-          retryCount += 1;
-          if (retryCount <= maxRetries) {
-            console.log(`Попытка повторить задачу ${taskName}, попытка ${retryCount}/${maxRetries}`);
-            // Повторный вызов самой задачи
-            await new Promise((resolve) => setTimeout(resolve, 1000)); // Пауза перед повтором
-            throw new Error('Повтор запуска задачи');
-          } else {
-            console.error(`Превышено количество попыток для задачи ${taskName}`);
-            retryCount = 0; // Сброс счетчика, если превышен лимит
-          }
+//     return new AsyncTask(
+//       taskName,
+//       async () => {
+//         try {
+//           await taskFunction();
+//           // Сброс счетчика при успешном выполнении
+//           retryCount = 0;
+//         } catch (error) {
+//           console.error(`Ошибка в задаче ${taskName}:`, error);
+//           retryCount += 1;
+//           if (retryCount <= maxRetries) {
+//             console.log(`Попытка повторить задачу ${taskName}, попытка ${retryCount}/${maxRetries}`);
+//             // Повторный вызов самой задачи
+//             await new Promise((resolve) => setTimeout(resolve, 1000)); // Пауза перед повтором
+//             throw new Error('Повтор запуска задачи');
+//           } else {
+//             console.error(`Превышено количество попыток для задачи ${taskName}`);
+//             retryCount = 0; // Сброс счетчика, если превышен лимит
+//           }
+//         }
+//       }
+//     );
+//   };
+
+const retryAsyncFunction = async (asyncFunction, maxRetries = 3, delay = 1000) => {
+    let attempt = 0;
+    while (attempt < maxRetries) {
+      try {
+        // Попытка выполнения асинхронной функции
+        return await asyncFunction();
+      } catch (error) {
+        attempt += 1;
+        console.error(`Ошибка: ${error.message}. Попытка ${attempt} из ${maxRetries}`);
+        if (attempt >= maxRetries) {
+          throw new Error(`Функция завершилась с ошибкой после ${maxRetries} попыток`);
         }
+        // Задержка перед следующей попыткой
+        await new Promise(resolve => setTimeout(resolve, delay));
       }
-    );
+    }
   };
 
 export const startBot = () => {
@@ -176,36 +194,73 @@ export const startBot = () => {
     bot.command("run", async ctx => {
         console.log("Start bot");
 
-        const groups = await groupsServices.getAllActiveGroups();
+        const vacancySendTask = new AsyncTask(
+            "send vacancy",
+            async () => {
+                const groups = await groupsServices.getAllActiveGroups();
+                for(const {id, groupId, link} of groups) {
+                    const sendVacancy = async()=> {
+                        const allVacanciesPage = await getPageWithProxy(link);
+                        const allVacancies = await vacancyServices.getVacanciesResourceIds({groupId: id});
+                        const allVacanciesResourceIds = allVacancies.map(({resourceId}) => resourceId);
 
-        const taskList = groups.map(({id, groupId, link})=> {
-            return async ()=> {
-                const allVacanciesPage = await getPageWithProxy(link);
-                const allVacancies = await vacancyServices.getVacanciesResourceIds({groupId: id});
-                const allVacanciesResourceIds = allVacancies.map(({resourceId}) => resourceId);
-
-                const $ = cheerio.load(allVacanciesPage);
-                
-                const newVacancyItem = [...$("[data-marker=item]")].find(item => !allVacanciesResourceIds.includes($(item).attr("data-item-id")));
-                if(newVacancyItem) {
-                    const vacancyPath = $(newVacancyItem).find("[data-marker=item-title]").attr("href");
-                    const vacancyUrl = `https://www.avito.ru${vacancyPath}`;
-                    const vacancyPage = await getPageWithProxy(vacancyUrl);
-                    const data = parseVacancy(vacancyPage, {resource: "avito", groupId: id});
-                    await vacancyServices.addVacancy(data);
-                    const text = createVacancyText(data);
-                    console.log("groupId", groupId);
-                    await ctx.telegram.sendMessage(groupId, text[0], { parse_mode: 'HTML' });
-                    if(text[1]) {
-                        bot.telegram.sendMessage(groupId, text[1], { parse_mode: 'HTML' });
-                        // await ctx.telegram.sendMessage(channel, text[1], { parse_mode: 'HTML' });
-                    }
-                    console.log("send");
+                        const $ = cheerio.load(allVacanciesPage);
+                        
+                        const newVacancyItem = [...$("[data-marker=item]")].find(item => !allVacanciesResourceIds.includes($(item).attr("data-item-id")));
+                        if(newVacancyItem) {
+                            const vacancyPath = $(newVacancyItem).find("[data-marker=item-title]").attr("href");
+                            const vacancyUrl = `https://www.avito.ru${vacancyPath}`;
+                            const vacancyPage = await getPageWithProxy(vacancyUrl);
+                            const data = parseVacancy(vacancyPage, {resource: "avito", groupId: id});
+                            await vacancyServices.addVacancy(data);
+                            const text = createVacancyText(data);
+                            console.log("groupId", groupId);
+                            await ctx.telegram.sendMessage(groupId, text[0], { parse_mode: 'HTML' });
+                            if(text[1]) {
+                                bot.telegram.sendMessage(groupId, text[1], { parse_mode: 'HTML' });
+                                // await ctx.telegram.sendMessage(channel, text[1], { parse_mode: 'HTML' });
+                            }
+                            console.log("send");
+                        }
+                    };
+                    await retryAsyncFunction(sendVacancy, 5, 2000);
                 }
+            },
+            (error) => {
+                console.log(error.message);
             }
-        })
+        );
 
-        const retryableTaskList = taskList.map(task => createRetryableTask('Vacancy Send Task', task));
+        // const groups = await groupsServices.getAllActiveGroups();
+
+        // const taskList = groups.map(({id, groupId, link})=> {
+        //     return async ()=> {
+        //         const allVacanciesPage = await getPageWithProxy(link);
+        //         const allVacancies = await vacancyServices.getVacanciesResourceIds({groupId: id});
+        //         const allVacanciesResourceIds = allVacancies.map(({resourceId}) => resourceId);
+
+        //         const $ = cheerio.load(allVacanciesPage);
+                
+        //         const newVacancyItem = [...$("[data-marker=item]")].find(item => !allVacanciesResourceIds.includes($(item).attr("data-item-id")));
+        //         if(newVacancyItem) {
+        //             const vacancyPath = $(newVacancyItem).find("[data-marker=item-title]").attr("href");
+        //             const vacancyUrl = `https://www.avito.ru${vacancyPath}`;
+        //             const vacancyPage = await getPageWithProxy(vacancyUrl);
+        //             const data = parseVacancy(vacancyPage, {resource: "avito", groupId: id});
+        //             await vacancyServices.addVacancy(data);
+        //             const text = createVacancyText(data);
+        //             console.log("groupId", groupId);
+        //             await ctx.telegram.sendMessage(groupId, text[0], { parse_mode: 'HTML' });
+        //             if(text[1]) {
+        //                 bot.telegram.sendMessage(groupId, text[1], { parse_mode: 'HTML' });
+        //                 // await ctx.telegram.sendMessage(channel, text[1], { parse_mode: 'HTML' });
+        //             }
+        //             console.log("send");
+        //         }
+        //     }
+        // })
+
+        // const retryableTaskList = taskList.map(task => createRetryableTask('Vacancy Send Task', task));
 
         // const vacancySend = async () => {
         //     const groups = await groupsServices.getAllActiveGroups();
@@ -292,24 +347,24 @@ export const startBot = () => {
             }
         );
 
-        const jobs = retryableTaskList.map((task) => {
-            return new SimpleIntervalJob({ seconds: 30 }, task);
-          });
+        // const jobs = retryableTaskList.map((task) => {
+        //     return new SimpleIntervalJob({ seconds: 30 }, task);
+        //   });
 
-        // const vacancyJob = new SimpleIntervalJob({
-        //     // minutes: 30,
-        //     seconds: 30,
-        // }, retryableVacancySendTask);
+        const vacancyJob = new SimpleIntervalJob({
+            minutes: 30,
+            // seconds: 70,
+        }, vacancySendTask);
 
         const linkMessageJob = new SimpleIntervalJob({
-            // minutes: 155,
-            seconds: 50,
+            minutes: 155,
+            // seconds: 50,
         }, botLinkMessageTask)
 
-        jobs.forEach(job => scheduler.addSimpleIntervalJob(job));
+        // jobs.forEach(job => scheduler.addSimpleIntervalJob(job));
 
-        // scheduler.addSimpleIntervalJob(vacancyJob);
-        // scheduler.addSimpleIntervalJob(linkMessageJob);
+        scheduler.addSimpleIntervalJob(vacancyJob);
+        scheduler.addSimpleIntervalJob(linkMessageJob);
     });
 
     bot.command("stop", () => {
