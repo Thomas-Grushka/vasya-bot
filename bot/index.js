@@ -352,13 +352,13 @@ export const startBot = () => {
         //   });
 
         const vacancyJob = new SimpleIntervalJob({
-            minutes: 30,
-            // seconds: 70,
+            // minutes: 30,
+            seconds: 30,
         }, vacancySendTask);
 
         const linkMessageJob = new SimpleIntervalJob({
-            minutes: 155,
-            // seconds: 50,
+            // minutes: 155,
+            seconds: 50,
         }, botLinkMessageTask)
 
         // jobs.forEach(job => scheduler.addSimpleIntervalJob(job));
